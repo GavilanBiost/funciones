@@ -53,9 +53,9 @@ models <- list(
   "Modelo 2" = list(covariates = "+ edad + sexo + imc")
 )
 
-# Ejecutar análisis
+# Ejecutar análisis (reemplazar con tu base de datos)
 resultados <- run_cox_models(
-  data = Scores_mort_bas,
+  data = mi_base_datos,  # Tu dataframe con las variables necesarias
   approaches = c("CQI_pre", "IG_pre"),
   reales = c("CQI Score", "IG Score"),
   models = models,
@@ -94,9 +94,9 @@ Función para ejecutar múltiples regresiones lineales (LM) o robustas (RLM) de 
 
 #### Ejemplo de Uso
 ```r
-# Ejecutar RLM sobre múltiples metabolitos
+# Ejecutar RLM sobre múltiples metabolitos (reemplazar con tu base de datos)
 resultados <- run_rlm(
-  data = Met_CQI_rl2,
+  data = mi_base_datos,  # Tu dataframe con metabolitos y outcomes
   metabolites = c("met1", "met2", "met3"),
   outcomes = c("cqi_est", "ig_est"),
   method = c("rlm", "lm"),
@@ -132,10 +132,10 @@ Función para calcular un score metabólico a partir de coeficientes beta y valo
 
 #### Ejemplo de Uso
 ```r
-# Calcular score y correlacionar con CQI
+# Calcular score y correlacionar con CQI (reemplazar con tus datos)
 resultado <- score_metabolico(
-  bbdd = BBDDmet_all,
-  tabla_coefs = coeficientes_df,
+  bbdd = mi_base_datos,  # Tu dataframe con valores de metabolitos
+  tabla_coefs = coeficientes_df,  # Dataframe con nombres y coeficientes
   col_nombres = "metabolito",
   col_betas = "beta",
   target_col = "CQI"
@@ -225,10 +225,12 @@ install.packages(c("survival", "dplyr", "MASS", "pls", "rio", "regmedint", "Hmis
 Para usar cualquier función en tus análisis:
 
 ```r
-# Cargar desde archivo RMarkdown
-source("run_cox_models.Rmd")  # O usar knitr::purl() para extraer código R
+# Opción 1: Extraer código R del archivo RMarkdown y luego cargar
+knitr::purl("run_cox_models.Rmd", output = "run_cox_models.R")
+source("run_cox_models.R")
 
-# Alternativamente, copiar la función directamente a tu script
+# Opción 2: Copiar la función directamente a tu script
+# Abre el archivo .Rmd y copia el código de la función que necesitas
 ```
 
 ### Estructura de Archivos
@@ -279,10 +281,10 @@ Al agregar nuevas funciones al repositorio:
 - [ ] Commit con mensaje descriptivo: "Add [nombre_funcion] documentation"
 
 ### Formato de Nueva Entrada:
-```markdown
+```
 ### N. nombre_funcion
 
-**Archivo:** `nombre_archivo.Rmd`  
+**Archivo:** nombre_archivo.Rmd  
 **Autor:** [Nombre]  
 **Fecha:** [YYYY-MM-DD]
 
@@ -290,14 +292,11 @@ Al agregar nuevas funciones al repositorio:
 [Descripción breve de qué hace la función]
 
 #### Parámetros
-- `param1`: Descripción del parámetro
-- `param2`: Descripción del parámetro
+- param1: Descripción del parámetro
+- param2: Descripción del parámetro
 
 #### Ejemplo de Uso
-```r
-# Código de ejemplo
-resultado <- nombre_funcion(...)
-```
+(Aquí incluir código R de ejemplo)
 ```
 
 ---
