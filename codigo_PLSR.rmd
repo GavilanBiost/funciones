@@ -1,0 +1,115 @@
+# PSEUDOCÓDIGO MÍNIMO PLSR EN R (esqueleto)
+# Objetivo: ajustar PLSR, seleccionar nº componentes por CV, evaluar y extraer variables importantes
+
+# 0) Setup --------------------------------------------------------------
+# install.packages(c("pls"))  # si hace falta
+library(pls)
+
+set.seed(123)
+
+# 1) Cargar datos -------------------------------------------------------
+# df: data.frame con Y (respuesta) y X1..Xp (predictores)
+df <- read.csv("01_datos/datos_limpios.csv")
+
+y_name <- "Y"
+x_names <- setdiff(names(df), y_name)
+
+X <- as.matrix(df[, x_names])
+Y <- df[[y_name]]
+
+# 2) Split train/test (opcional pero recomendable) ----------------------
+idx <- sample(seq_len(nrow(df)))
+n_train <- floor(0.8 * nrow(df))
+train_id <- idx[1:n_train]
+test_id  <- idx[(n_train + 1):nrow(df)]
+
+train <- df[train_id, ]
+test  <- df[test_id,  ]
+
+# 3) Ajustar PLSR con validación cruzada --------------------------------
+# scale=TRUE: centra y escala X
+# validation="CV": CV interna (k-fold por defecto en pls)
+max_comp <- min(20, ncol(X), nrow(train) - 2)  # regla práctica
+
+fit <- plsr(
+  formula = as.formula(paste(y_name, "~", paste(x_names, collapse = "+"))),
+  data = train,
+  ncomp = max_comp,
+  scale = TRUE,
+  validation = "CV"
+)
+
+# 4) Selección de componentes -------------------------------------------
+# RMSEP por nº de componentes (incluye intercepto, comp=0,1,...)
+rmsep <- RMSEP(fit)            # objeto con RMSE por comp
+rmsep_vals <- drop(rmsep$val)  # vector (depende de versión; puede requerir indexación)
+
+# Selección simple: comp con RMSE mínimo (en CV)
+# Nota: a veces conviene "1-SE rule", aquí lo mínimo.
+opt_comp <- which.min(rmsep_vals) - 1  # -1 si rmsep incluye comp=0
+
+# 5) Evaluación en test --------------------------------------------------
+pred_test <- as.vector(predict(fit, newdata = test, ncomp = opt_comp))
+y_test <- test[[y_name]]
+
+rmse_test <- sqrt(mean((y_test - pred_test)^2))
+r2_test <- 1 - sum((y_test - pred_test)^2) / sum((y_test - mean(y_test))^2)
+
+# 6) Interpretación rápida ----------------------------------------------
+# Coeficientes del modelo final
+coef_opt <- coef(fit, ncomp = opt_comp)  # matriz p x 1
+coef_opt <- drop(coef_opt)
+
+# Scores / loadings (útil para plots/interpretación)
+scores_opt <- scores(fit)[, 1:opt_comp, drop = FALSE]
+loadings_opt <- loadings(fit)[, 1:opt_comp, drop = FALSE]
+
+# VIP (no viene en pls base): función mínima
+vip <- function(pls_model, ncomp) {
+  W <- pls_model$loading.weights[, 1:ncomp, drop = FALSE]
+  T <- pls_model$scores[, 1:ncomp, drop = FALSE]
+  Q <- pls_model$Yloadings[1:ncomp, , drop = FALSE]
+
+  p <- nrow(W)
+  # Suma explicada en Y por componente (aprox)
+  SSY <- colSums((T %*% t(Q))^2)
+
+  vip_scores <- rep(0, p)
+  for (j in 1:p) {
+    wj <- W[j, ]^2
+    vip_scores[j] <- sqrt(p * sum(SSY * wj / colSums(W^2)) / sum(SSY))
+  }
+  names(vip_scores) <- rownames(pls_model$loading.weights)
+  vip_scores
+}
+
+vip_scores <- vip(fit, opt_comp)
+
+# 7) Guardar outputs -----------------------------------------------------
+dir.create("03_resultados", showWarnings = FALSE, recursive = TRUE)
+
+write.csv(
+  data.frame(variable = names(coef_opt), coef = coef_opt),
+  "03_resultados/coeficientes_plsr.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  data.frame(variable = names(vip_scores), vip = vip_scores),
+  "03_resultados/vip_plsr.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  data.frame(y_true = y_test, y_pred = pred_test),
+  "03_resultados/pred_test.csv",
+  row.names = FALSE
+)
+
+# 8) Resumen final (mensaje claro) --------------------------------------
+cat("\nPLSR final\n")
+cat(" - Componentes óptimos:", opt_comp, "\n")
+cat(" - RMSE (test):", round(rmse_test, 4), "\n")
+cat(" - R2   (test):", round(r2_test, 4), "\n")
+cat(" - Top VIP:\n")
+print(head(sort(vip_scores, decreasing = TRUE), 10))

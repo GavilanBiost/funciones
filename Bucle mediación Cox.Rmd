@@ -1,0 +1,98 @@
+---
+title: "Bucle mediación Cox"
+output: html_document
+date: "2025-06-26"
+---
+
+### 10.1.1. Selección de metabolitos:
+
+```{r}
+CQI_sig <- resultados_CQI$Variable[resultados_CQI$padj < 0.05]
+IG_sig <- resultados_IG$Variable[resultados_IG$padj < 0.05]
+CG_sig <- resultados_CG$Variable[resultados_CG$padj < 0.05]
+```
+
+### 10.1.2. Mortalidad:
+
+#### 10.1.2.1. CQI:
+
+En el siguiente loop, primero recorro la lista de metabolitos significativos y después realizo el modelo de mediación con bootstrap. El número de repeticiones se indica en n_boot, los resultados se guardan en una lista en resultados_boot y planto semilla para tener resultados replicables. Dado que son muchos análisis, realizo bloques para evitar el colapso del ordenador:
+
+```{r}
+Met_CQI_msea_p$edad_q = as.numeric(cut2(Met_CQI_msea_p$edad0, g = 4))
+Met_CQI_msea_p$imc_q = as.numeric(cut2(Met_CQI_msea_p$imc1, g = 2))
+Met_CQI_msea_p$y_Surv = with(Met_CQI_msea_p, Surv(follcox_19, death19))
+
+# AÑADIR CODIGO DE BLOQUES. HACER BLOQUES DE 5 METABOLITOS:
+
+n_boot <- 1000
+resultados_boot <- c()
+set.seed(123)
+
+for (var in tolower(CQI_sig)) {
+  for (i in 1:n_boot) {
+    # Nombro cada ejecución para saber en qué metabolito y en repetición estoy:
+    cat("Variable:", var, "- Bootstrap", i, "de", n_boot, "\n")
+    # Creo la BD según el bootstrap que toca:
+    boot_sample <- Met_CQI_msea_p[sample(nrow(Met_CQI_msea_p), replace = TRUE), ]
+    # Comienzo la mediación:
+    resultado <- tryCatch({regmedint(data = boot_sample,
+                                     # Ojo, se tiene que crear y_Surv
+                                     yvar = "y_Surv", 
+                                     # variable explicativa
+                                     avar = "cqi_est",
+                                     # variable mediadora
+                                     mvar = var, 
+                                     # co-variables
+                                     cvar = c("edad_q", "sexo", "fr_smoke", "ps1", 
+                                              "ps2", "grup_int", "nodo", "imc_q", 
+                                              "energiat", "alcoholg", "escolar1",
+                                              "getota_1", "hipercol0", "hta0", 
+                                              "tra_col0", "trathta0"),
+                                     # tipo de modelo de mediación: linear/logistic
+                                     mreg = "linear",
+                                     # tipo de modelo principal: linear/logistic/
+                                     # loglinear/poisson/negbin/survCox/survAFT_exp/
+                                     # survAFT_weibull
+                                     yreg = "survCox",
+                                     # Valor de referencia de avar:
+                                     a0 = 0,
+                                     # Valor activo de avar:
+                                     a1 = 1,
+                                     # Valor fijo del mediador:
+                                     m_cde = mean(boot_sample[[var]], na.rm = T),
+                                     c_cond = c(1:16),
+                                     na_omit = T)
+    }, error = function(e) NULL)
+    nombre <- paste0(var, "_boot", i)
+    resultados_boot[[nombre]] <- resultado
+  }
+}
+validos <- Filter(Negate(is.null), resultados_boot)
+
+#summary(validos[[1]])$summary_myreg[,1] valores de mediación
+#summary(validos[[1]])$summary_myreg[,5] IC95% bajo
+#summary(validos[[1]])$summary_myreg[,6] IC95% alto
+
+# Extraer log-HR
+logHR_NDE <- sapply(validos, function(x) summary(validos[[x]])$summary_myreg[1,1])
+logHR_NIE <- sapply(validos, function(x) x$effect.pe.log$nie)
+logHR_TE  <- sapply(validos, function(x) x$effect.pe.log$te)
+
+# Convertir a HR
+HR_NDE <- exp(logHR_NDE)
+HR_NIE <- exp(logHR_NIE)
+HR_TE  <- exp(logHR_TE)
+
+# ICs percentiles 95%
+IC_HR <- function(x) quantile(x, probs = c(0.025, 0.975))
+
+IC_NDE <- IC_HR(HR_NDE)
+IC_NIE <- IC_HR(HR_NIE)
+IC_TE  <- IC_HR(HR_TE)
+
+# Proporción mediada
+prop_mediada <- log(HR_NIE) / log(HR_TE)
+IC_prop_mediada <- IC_HR(prop_mediada)
+
+```

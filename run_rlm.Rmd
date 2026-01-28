@@ -1,0 +1,164 @@
+---
+title: "run_rlm"
+author: "Jesús F García Gavilán"
+date: "2026-01-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+run_rlm = function(data,
+                   metabolites,
+                   outcomes = c("cqi_est"), # Uno o varios
+                   method = "lm", # Uno o varios (uno por outcome)
+                   covariates = "", # + var1 + var2...
+                   digits_coef = 2,
+                   digits_p = 3,
+                   p_adjust_method = "BH",
+                   export_path = NULL,
+                   tolower_names = T) {
+  
+  # --------------------------------------------------------------------------
+  # ARGUMENTOS:
+  # data: Base de datos con outcome, covariables y metabolitos (ej. Met_CQI_rl2)
+  # metabolites: Vector con los nombres de los metabolitos a iterar
+  # outcome: Nombre de la variable respuesta (default = "cqi_est")
+  # method: "lm" para modelos lineales, "rlm" para modelos robustos
+  # covariates: Cadena con las covariables del modelo (incluye los "+" necesarios)
+  # digits_coef: Decimales para redondear Coef e IC (default = 2)
+  # digits_p: Decimales para redondear p-value (default = 3)
+  # p_adjust_method: Método de p.adjust (default = "BH")
+  # export_path: (Opcional) Ruta completa del archivo .xlsx a exportar. Si es NULL, no exporta
+  # tolower_names: (Logical) Si TRUE, aplica tolower() a metabolites (default = TRUE)
+  # --------------------------------------------------------------------------
+  
+  if (!requireNamespace("dplyr", quietly = T)) stop("Necesitas 'dplyr'")
+  if (length(method) == 1) {
+    method_vec = rep(method, length(outcomes))
+  } else if (length(method) == length(outcomes)) {
+    method_vec = method
+  } else {
+    stop("La longitud de 'method' debe ser 1 o coincidir con la longitud de 'outcomes'")
+  }
+  if ("rlm" %in% method_vec && !requireNamespace("MASS", quietly = T)) {
+    stop("Necesitas 'MASS' instalado porque has seleccionado 'rlm' en algún outcome")
+  }
+
+  mets = metabolites
+  if (tolower_names) mets = tolower(mets)
+  
+  fmt_p = function(p) {
+    if (is.na(p)) return(NA_real_)
+    round(p, digits_p)
+  }
+  
+  total_iter = length(mets) * length(outcomes)
+  fits = vector("list", total_iter)
+  rows = vector("list", total_iter)
+  k = 1 
+
+  for (j in seq_along(outcomes)) {
+    
+    curr_outcome = outcomes[j]
+    curr_method  = method_vec[j]
+    
+    if (!curr_method %in% c("lm", "rlm")) {
+      warning(paste("Método desconocido:", curr_method, "--> Usando 'lm' por defecto"))
+      curr_method = "lm"
+    }
+
+    if (!curr_outcome %in% names(data)) {
+      warning(paste("El outcome", curr_outcome, "no existe en data. Saltando..."))
+      k = k + length(mets)
+      next
+    }
+
+    for (i in seq_along(mets)) {
+      var = mets[i]
+      
+      empty_row = data.frame(Outcome = curr_outcome, Variable = var, Method = curr_method, 
+                             Coef = NA, IC_low = NA, IC_high = NA, p_value = NA, 
+                             stringsAsFactors = F)
+      
+      if (!var %in% names(data)) {
+        rows[[k]] = empty_row
+        k = k + 1
+        next
+      }
+      
+      f = as.formula(paste0(var, " ~ ", curr_outcome, " ", covariates))
+      
+      if (curr_method == "rlm") {
+        modelo = tryCatch(MASS::rlm(f, data = data), error = function(e) NULL)
+      } else {
+        modelo = tryCatch(lm(f, data = data), error = function(e) NULL)
+      }
+      
+      if (is.null(modelo)) {
+        rows[[k]] = empty_row
+        k = k + 1
+        next
+      }
+      
+      fits[[k]] = modelo
+      resumen = summary(modelo)
+      rn = rownames(resumen$coefficients)
+      idx = match(curr_outcome, rn)
+      
+      if (curr_method == "rlm") {
+        conf_int = tryCatch(suppressMessages(confint.default(modelo)), 
+                            error = function(e) NULL)
+        if (!is.na(idx) && !is.null(conf_int)) {
+          t_val = resumen$coefficients[idx, 3]
+          p_val_final = 2*(1-pnorm(abs(t_val)))
+        } else { p_val_final = NA }
+      } else {
+        conf_int = tryCatch(suppressMessages(confint(modelo)), 
+                            error = function(e) NULL)
+        if (!is.na(idx) && !is.null(conf_int)) {
+          p_val_final = resumen$coefficients[idx, 4]
+        } else { p_val_final = NA }
+      }
+      
+      if (is.na(idx) || is.null(conf_int)) {
+        rows[[k]] = empty_row
+      } else {
+        rows[[k]] = data.frame(Outcome = curr_outcome,
+                               Variable = var,
+                               Method = curr_method,
+                               Coef = round(resumen$coefficients[idx, 1], digits_coef),
+                               IC_low = round(conf_int[idx, 1], digits_coef),
+                               IC_high = round(conf_int[idx, 2], digits_coef),
+                               p_value = fmt_p(p_val_final),
+                               stringsAsFactors = FALSE)
+      }
+      k = k + 1
+    }
+  }
+  
+  resultados = dplyr::bind_rows(rows) %>%
+    dplyr::filter(!is.na(Variable))
+  
+  if (nrow(resultados) > 0) {
+    resultados = resultados %>%
+      dplyr::group_by(Outcome) %>% 
+      dplyr::mutate(
+        padj = round(p.adjust(p_value, method = p_adjust_method), 3),
+        res = dplyr::case_when(padj < 0.001 ~ "***",
+                               padj < 0.01  ~ "**",
+                               padj < 0.05  ~ "*",
+                               TRUE ~ NA_character_)
+      ) %>%
+      dplyr::ungroup()
+  }
+  if (!is.null(export_path)) {
+    if (!requireNamespace("rio", quietly = T)) stop("Instala 'rio'")
+    rio::export(resultados, export_path)
+  }
+  invisible(list(fits = fits, results = resultados))
+}
+```
+

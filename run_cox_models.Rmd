@@ -1,0 +1,169 @@
+---
+title: "run_cox_models"
+author: "Jesús F García Gavilán"
+date: "2026-01-13"
+output: html_document
+---
+
+```{r}
+run_cox_models = function(data, approaches, reales = approaches, models,
+                           time_var = "follcox_19", event_var = "death19",
+                           digits = 3, export_path = NULL,
+                           robust = F, weights = NULL) {
+  # --------------------------------------------------------------------------
+  # ARGUMENTOS:
+  # data: Base de datos que contiene time_var, event_var y covariables (ej. Scores_mort_bas).
+  # approaches: Vector de caracteres con los nombres de las variables de exposición (ej. "CQI_pre").
+  # reales: Vector de etiquetas para la tabla de salida (ej. "CQI Score"). Mismo orden que 'approaches'.
+  # models: Lista de listas definiendo los ajustes. Estructura: list("Modelo 1" = list(covariates = "+ edad...")).
+  # time_var: Nombre de la columna de tiempo de seguimiento (ej. "follcox_19").
+  # event_var: Nombre de la columna de evento (ej. "death19").
+  # digits: Decimales para redondeo de HR e IC (default = 3).
+  # export_path: (Opcional) Ruta completa del archivo .xlsx a exportar. Si es NULL, no exporta.
+  # robust: (Logical) Si es TRUE, calcula errores estándar robustos.
+  # weights: (Opcional) Nombre de la columna de pesos o vector numérico.
+  # --------------------------------------------------------------------------
+
+  stopifnot(length(approaches) == length(reales))
+  stopifnot(is.list(models))
+
+  if (!requireNamespace("survival", quietly = T)) {
+    stop("Necesitas instalar 'survival'")
+  }
+
+  surv_lhs = paste0("survival::Surv(", time_var, ", ", event_var, ") ~ ")
+
+  fmt_p = function(p) {
+    if (is.na(p)) return(NA_character_)
+    p_round = round(p, digits)
+    if (!is.na(p_round) && p_round == 0) return(paste0("<", format(10^-digits, scientific = F)))
+    as.character(p_round)
+  }
+
+  # Detecta tipo: continua vs ntile
+  detect_type = function(x) {
+    if (is.factor(x) || is.character(x) || is.ordered(x)) return("ntile")
+    if (is.numeric(x) && length(unique(x[!is.na(x)])) <= 6) return("ntile")
+    "continua"
+  }
+
+  extract_term = function(fit_obj, term, var_type, real_name) {
+    s = summary(fit_obj)
+    rn = rownames(s$coefficients)
+
+    if (var_type == "continua") {
+      idx = match(term, rn)
+      if (is.na(idx)) {
+        return(data.frame(approach = term, label = real_name, type = var_type,
+                          level = NA_character_, HR = NA, lower_95 = NA,
+                          upper_95 = NA, P_value = NA_character_,
+                          stringsAsFactors = F))
+      }
+
+      hr = s$conf.int[idx, c("exp(coef)", "lower .95", "upper .95")]
+      p  = s$coefficients[idx, "Pr(>|z|)"]
+
+      return(data.frame(approach = term, label = real_name, type = var_type,
+                        level = NA_character_,
+                        HR = round(hr[1], digits),
+                        lower_95 = round(hr[2], digits),
+                        upper_95 = round(hr[3], digits),
+                        P_value = fmt_p(p),
+                        stringsAsFactors = F))
+    }
+
+    idxs = grep(paste0("^", term), rn)
+
+    if (length(idxs) == 0) {
+      return(data.frame(approach = term, label = real_name, type = var_type,
+                        level = NA_character_, HR = NA, lower_95 = NA,
+                        upper_95 = NA, P_value = NA_character_,
+                        stringsAsFactors = F))
+    }
+
+    out = lapply(idxs, function(j) {
+      hr = s$conf.int[j, c("exp(coef)", "lower .95", "upper .95")]
+      p  = s$coefficients[j, "Pr(>|z|)"]
+
+      data.frame(approach = term, label = real_name, type = var_type, level = rn[j],
+                 HR = round(hr[1], digits),
+                 lower_95 = round(hr[2], digits),
+                 upper_95 = round(hr[3], digits),
+                 P_value = fmt_p(p),
+                 stringsAsFactors = F)
+    })
+
+    do.call(rbind, out)
+  }
+
+  wts = NULL
+  if (!is.null(weights)) {
+    if (is.character(weights) && length(weights) == 1) {
+      if (!weights %in% names(data)) stop("La columna indicada en 'weights' no existe en 'data'.")
+      wts = data[[weights]]
+    } else {
+      if (length(weights) != nrow(data)) stop("'weights' debe tener longitud nrow(data) o ser el nombre de una columna.")
+      wts = weights
+    }
+  }
+
+  # Salidas
+  fits = list()
+  results = list()
+
+  # Guardar tipo por approach (informativo)
+  var_type = setNames(vapply(approaches, function(a) detect_type(data[[a]]), character(1)), approaches)
+
+  for (m in names(models)) {
+    results[[m]] = vector("list", length(approaches))
+    names(results[[m]]) = reales
+    fits[[m]] = vector("list", length(approaches))
+  }
+
+  # Loop principal
+  for (i in seq_along(approaches)) {
+    a = approaches[i]
+    a_type = var_type[[a]]
+    real_name = reales[i]
+
+    for (m in names(models)) {
+      spec = models[[m]]
+
+      rhs = if (!is.null(spec$interaction)) {
+        paste0(a, " * ", spec$interaction,
+               if (!is.null(spec$covariates)) paste0(" + ", spec$covariates) else "")
+      } else {
+        paste0(a, if (!is.null(spec$covariates)) paste0(spec$covariates) else "")
+      }
+
+      f = as.formula(paste0(surv_lhs, rhs))
+
+      fit = survival::coxph(f, data = data, robust = robust, weights = wts)
+
+      fits[[m]][[i]] = fit
+      results[[m]][[i]] = extract_term(fit, a, a_type, real_name)
+    }
+  }
+
+  full_table = do.call(rbind, unlist(lapply(names(results), function(m) {
+    block = do.call(rbind, results[[m]])
+    sep = data.frame(approach = NA_character_, label = m, type = NA_character_,
+                     level = NA_character_, HR = NA, lower_95 = NA,
+                     upper_95 = NA, P_value = NA_character_,
+                     stringsAsFactors = F)
+    list(sep, block)
+  }), recursive = F))
+
+  modelos = as.data.frame(full_table, stringsAsFactors = F)
+
+  if (!is.null(export_path)) {
+    if (!requireNamespace("rio", quietly = T)) {
+      stop("Instala 'rio' para exportar")
+    }
+    rio::export(modelos, export_path)
+  }
+
+  invisible(list(fits = fits, results = results, full_table = modelos))
+}
+
+```

@@ -1,0 +1,87 @@
+---
+title: "score_metabolico"
+author: "Jesús F García Gavilán"
+date: "2026-01-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+score_metabolico = function(bbdd, tabla_coefs, col_nombres = "names", col_betas = "beta", target_col = NULL) {
+  # --------------------------------------------------------------------------
+  # ARGUMENTOS:
+  # bbdd: Tu base de datos de pacientes (BBDDmet_all).
+  # tabla_coefs: Dataframe con los nombres de variables y sus coeficientes.
+  # col_nombres: Nombre de la columna en 'tabla_coefs' que tiene los nombres de los metabolitos.
+  # col_betas: Nombre de la columna en 'tabla_coefs' que tiene los valores numéricos.
+  # target_col: (Opcional) Nombre de la columna en 'bbdd' con la que quieres correlacionar (ej. "CQI").
+  # --------------------------------------------------------------------------
+  
+  # 1. Normalizar nombres
+  names_coefs_raw = as.character(tabla_coefs[[col_nombres]])
+  names_coefs_clean = tolower(trimws(names_coefs_raw))
+  
+  coefs_work = data.frame(names = names_coefs_clean,
+                           beta = as.numeric(tabla_coefs[[col_betas]]),
+                           stringsAsFactors = F)
+
+  colnames(bbdd) = tolower(trimws(colnames(bbdd)))
+  
+  # 2. INTERCEPTO
+  idx_intercept = grep("intercept", coefs_work$names)
+  
+  if (length(idx_intercept) > 0) {
+    intercepto_val = coefs_work$beta[idx_intercept]
+    coefs_limpios = coefs_work[-idx_intercept, ]
+  } else {
+    intercepto_val = 0
+    coefs_limpios = coefs_work
+  }
+  
+  # 2. MATCHING DE VARIABLES
+  vars_comunes = intersect(coefs_limpios$names, colnames(bbdd))
+  
+  if (length(vars_comunes) == 0) {
+    stop("Error: No se encontraron metabolitos coincidentes (revisada la ortografía en minúsculas).")
+  }
+  
+  # 3. ALINEACIÓN Y CÁLCULO
+  idx_orden = match(vars_comunes, coefs_limpios$names)
+  betas_ordenadas = coefs_limpios$beta[idx_orden]
+  
+  X_mat = as.matrix(bbdd[, vars_comunes])
+  
+  # Cálculo matricial: (Datos * Coeficientes) + Intercepto
+  scores = (X_mat %*% betas_ordenadas) + intercepto_val
+  
+  # 4. RESULTADOS Y CORRELACIÓN
+  resultado = list()
+  resultado$scores = as.numeric(scores)
+  resultado$n_metabolitos = length(vars_comunes)
+  
+  if (!is.null(target_col)) {
+    target_clean = tolower(trimws(target_col))
+    
+    if (target_clean %in% colnames(bbdd)) {
+      test_corr = cor.test(bbdd[[target_clean]], resultado$scores, conf.level = 0.95)
+      resultado$cor_test = test_corr
+      
+      cat(paste0(">>> Score calculado para target: '", target_col, "'\n"))
+      cat(paste0("    Metabolitos encontrados: ", length(vars_comunes), "\n"))
+      cat(paste0("    Intercepto aplicado: ", round(intercepto_val, 4), "\n"))
+      cat(paste0("    Correlación (r): ", round(test_corr$estimate, 3), 
+                 " (p = ", format.pval(test_corr$p.value, eps=0.001), ")\n\n"))
+    } else {
+      warning(paste("La columna target '", target_col, "' no se encontró en la BBDD"))
+    }
+  } else {
+    cat(paste0(">>> Score calculado. Metabolitos usados: ", length(vars_comunes), "\n"))
+  }
+  
+  return(resultado)
+}
+```
+
